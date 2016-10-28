@@ -375,6 +375,26 @@ def plotTimepointIntersection(infiles, outfile):
                                                  submit=True)
 
 
+@transform("time_DE_union.dir/*-summarised-expression.tsv",
+           regex("time_DE_union.dir/(.+)-summarised-expression.tsv"),
+           r"time_DE_union.dir/\1-CORE-cross_correlation.tsv")
+def timeUnionCrossCorrelation(infile, outfile):
+    '''
+    Intersect the Fo -> GC DE genes with timepoint union
+    DE genes, then calculate their cross-correlation
+    '''
+
+    job_memory = "8G"
+
+    statement = '''
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/CrossCorrelation.py
+    --log=%(outfile)s.log
+    %(infile)s
+    > %(outfile)s'''
+
+    P.run()
+
+
 @follows(coreOverlapFovsGC)
 @collate(coreOverlapFovsGC,
          regex("(.+)_(.+)-intersect.tsv"),

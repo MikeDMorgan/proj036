@@ -38,10 +38,12 @@ import re
 import pandas as pd
 import numpy as np
 import itertools
-import multiprocessing
+from multiprocessing.pool import ThreadPool
 import CGATPipelines.Pipeline as P
 import os
 import pickle
+import threading
+import concurrent.futures
 
 
 class JobGenerator(object):
@@ -84,19 +86,33 @@ class JobGenerator(object):
 
         return xcor
 
-    def mapFunction(self, function):
+    def mapFunction(self, function, index1, index2):
         '''
         Map a function on to a data matrix
         given the index attributes
         '''
 
-        comb_index = itertools.product(self.index1, self.index2)
+        comb_index = itertools.product(index1, index2)
         
         xcor_array = np.array(map(self.pairwiseCrossCorrelate, comb_index))
 
-        xcor_mat = xcor_array.reshape(len(self.index1),
-                                      len(self.index2))
+        xcor_mat = xcor_array.reshape(len(index1),
+                                      len(index2))
         return xcor_mat
+
+
+def threadedMappingFunction(index1, index2, corr_object):
+    '''
+    Calling multpiple threads on the same object will alter the
+    same underlying array.
+    Generate a new array for each thread to manipulate
+    '''
+
+    # use locking to prevent multiple threads
+    # altering the output array?
+    corr_array = corr_object.mapFunction(corr_object.pairwiseCrossCorrelate,
+                            index1, index2)
+    return corr_array, index1, index2
 
 
 def crossCorrelate(t, s, lag=0):
@@ -187,26 +203,38 @@ def main(argv=None):
     split_task.addMatrix(exprs_df)
     # for each job do these things
 
-    jobs_iter = 1
     # need to record and retain the order of the blocks
     # in order to insert correct blocks into final matrix
 
     aggregated_cor = pd.DataFrame(np.zeros((n_iters, n_iters),
                                              dtype=np.float64))
-    for job_pair in pair_blocks:
-        split_task.addIndices(index1=job_pair[0],
-                              index2=job_pair[1],
-                              axis=0)
-        # map returns a list containing the array
+
+    n_threads = 8
+    E.info("Starting {} thread pools".format(n_threads))
+    executor = concurrent.futures.ThreadPoolExecutor(n_threads)
+
+    results = [executor.submit(threadedMappingFunction,
+                               job_pair[0],
+                               job_pair[1],
+                               split_task) for job_pair in pair_blocks]
+    
+    E.info("Resolving threads")
+
+    # what is the best timeout time to use, how fast will
+    # each iteration complete?  there is a balance between the
+    # overhead of the number of threads, and the total compute
+    # time
+    jobs_iter = 1
+    wait_time = 900
+    for result in concurrent.futures.as_completed(results):
+        try:
+            array, idx1, idx2 = result.result()
+            aggregated_cor.iloc[idx1, idx2] = array
+        except concurrent.futures._base.TimeoutError:
+            E.info("Process still running")
+            pass
         if not jobs_iter % 100:
-            E.info("Calculating function on block {}".format(jobs_iter))
-
-        # get this to qsubmit as a cluster job or 
-        # invoke multithreading capability
-        jobs_iter += 1
-
-        cor_array = split_task.mapFunction(split_task.pairwiseCrossCorrelate)
-        aggregated_cor.iloc[job_pair[0], job_pair[1]] = cor_array
+            E.info("Processed block computations {}".format(jobs_iter))
 
     cor_df = pd.DataFrame(aggregated_cor)
     cor_df.index = exprs_df.index
@@ -214,9 +242,6 @@ def main(argv=None):
 
     cor_df.to_csv(options.stdout,
                   sep="\t", index_label=None)
-
-    # pass this paired_blocks iterator and the expression
-    # matrix to the job generator
 
     # write footer and output benchmark information.
     E.Stop()

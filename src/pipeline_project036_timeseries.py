@@ -395,6 +395,26 @@ def timeUnionCrossCorrelation(infile, outfile):
     P.run()
 
 
+@follows(timeUnionCrossCorrelation)
+@collate("time_DE_union.dir/*-summarised-expression.tsv",
+         regex("time_DE_union.dir/(.+)-summarised-expression.tsv"),
+         r"time_DE_union.dir/\1-fo_gc-intersection.tsv")
+def defineUnionCoreGenes(infiles, outfile):
+    '''
+    Intersect the union of temporally differentially expressed
+    genes with the Fo -> GC DE genes
+    '''
+
+    dbh = connect()
+    fo_gc = sql.read_sql('''SELECT * FROM FovsGC_deseq;''',
+                         dbh,
+                         index_col="gene_id")
+
+    PipelineProject036.coreOverlapFoVsGC(infile=infile,
+                                         fo_gc=fo_gc,
+                                         submit=True)
+
+
 @follows(coreOverlapFovsGC)
 @collate(coreOverlapFovsGC,
          regex("(.+)_(.+)-intersect.tsv"),
@@ -2227,9 +2247,9 @@ FASTQ_FILES = tuple([os.path.join(FASTQ_DIR, suffix_name)
 FASTQ_REGEX = regex(r"%s/(\S+).fastq.1.gz" % FASTQ_DIR)
 SE_REGEX = regex(r"%s/(\S+).fastq.gz" % FASTQ_DIR)
 FASTQ_PAIR = r"%s/\1.fastq.2.gz" % FASTQ_DIR
-#PAIR_EXIST = any([True for pe in os.listdir("%s" % FASTQ_DIR) if re.search("fastq.2.gz",
-#                                                                           pe)])
-PAIR_EXIST = None
+PAIR_EXIST = any([True for pe in os.listdir("%s" % FASTQ_DIR) if re.search("fastq.2.gz",
+                                                                           pe)])
+#PAIR_EXIST = None
 
 # get tpm for lncRNAs in current data
 @follows(mkdir("transcripts.dir"))
@@ -2391,7 +2411,7 @@ elif PARAMS['transcript_program'] == "sailfish":
         --method=make_index
         --program=sailfish
         --index-fasta=%(infile)s
-        --kmer-size=%(transcript_kmer)s
+        --kmer-size=31
         --threads=%(job_threads)s
         --output-directory=%(outdir)s
         --log=%(outfile)s.log
@@ -2431,7 +2451,6 @@ elif PARAMS['transcript_program'] == "sailfish":
             --log=%(outfile)s.log
             --program=sailfish
             --method=quant
-            --paired-end
             --index-file=%(index_dir)s
             --output-directory=%(out_dir)s
             --library-type=%(transcript_library)s

@@ -396,13 +396,13 @@ def timeUnionCrossCorrelation(infile, outfile):
 
 
 @follows(timeUnionCrossCorrelation)
-@collate("time_DE_union.dir/*-summarised-expression.tsv",
-         regex("time_DE_union.dir/(.+)-summarised-expression.tsv"),
-         r"time_DE_union.dir/\1-fo_gc-intersection.tsv")
-def defineUnionCoreGenes(infiles, outfile):
+@transform("time_DE_union.dir/*-timepoint_union_genes.tsv",
+           regex("time_DE_union.dir/(.+)-timepoint_union_genes.tsv"),
+           r"time_DE_union.dir/\1-fo_gc-intersection.tsv")
+def defineUnionIntersectGenes(infile, outfile):
     '''
     Intersect the union of temporally differentially expressed
-    genes with the Fo -> GC DE genes
+    genes with the Fo -> GC DE genes for each condition
     '''
 
     dbh = connect()
@@ -410,8 +410,26 @@ def defineUnionCoreGenes(infiles, outfile):
                          dbh,
                          index_col="gene_id")
 
-    PipelineProject036.coreOverlapFoVsGC(infile=infile,
-                                         fo_gc=fo_gc,
+    PipelineProject036.unionOverlapFoVsGC(infile=infile,
+                                          fo_gc=fo_gc,
+                                          outfile=outfile,
+                                          submit=True)
+
+
+
+@follows(defineUnionIntersectGenes)
+@collate(defineUnionIntersectGenes,
+         regex("time_DE_union.dir/(.+)-fo_gc-intersection.tsv"),
+         r"time_DE_union.dir/Union-core_genes.tsv")
+def defineUnionCoreGenes(infiles, outfile):
+    '''
+    Intersect each of the union of temporally DE
+    gene sets that intersect Fo -> GC into a
+    single set of core genes
+    '''
+
+    PipelineProject036.getCoreUnionGenes(infiles=infiles,
+                                         outfile=outfile,
                                          submit=True)
 
 
@@ -2451,6 +2469,7 @@ elif PARAMS['transcript_program'] == "sailfish":
             --log=%(outfile)s.log
             --program=sailfish
             --method=quant
+            --paired-end
             --index-file=%(index_dir)s
             --output-directory=%(out_dir)s
             --library-type=%(transcript_library)s
@@ -2511,7 +2530,7 @@ elif PARAMS['transcript_program'] == "sailfish":
 
     @follows(quantifyWithSailfish)
     @collate(quantifyWithSailfish,
-             regex("tpm.dir/(.+)_(.+)_(.+).tpm"),
+             regex("tpm.dir/(.+)-(.+)-(.+).tpm"),
              r"tpm.dir/\1.tpm")
     def mergeSailfishRuns(infiles, outfile):
         '''

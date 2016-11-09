@@ -2332,6 +2332,56 @@ def ggPlotRScatter(df, p_name, image_dir):
 
 
 @P.cluster_runnable
+def unionOverlapFoVsGC(infile, fo_gc, outfile):
+    '''
+    Take the union of all temporally differentially
+    expressed genes and intersect if with the DE
+    genes between Fo - > GC
+    '''
+
+    name_list = infile.split("/")[-1].split("-")
+    out_name = name_list[0] + "-Fo_GC_Union-intersect.tsv"
+    df = pd.read_table(infile,
+                       sep="\t",
+                       header=0,
+                       index_col=0)
+    de_genes = set(df.index)
+    fo_gc_de = fo_gc[fo_gc['padj'] <= 0.01].index
+    fo_gc_genes = [gx for gx in fo_gc_de if re.search("ENS", gx)]
+
+    intersect_genes = de_genes.intersection(fo_gc_genes)
+    
+    with open(outfile, "w") as ofile:
+        for gene in intersect_genes:
+            ofile.write("{}\n".format(gene))
+
+
+
+@P.cluster_runnable
+def getCoreUnionGenes(infiles, outfile):
+    '''
+    Intersect all condition temporally DE genes that overlap
+    with Fo -> GC genes into a set of core DE genes
+    '''
+
+    gene_sets = []
+    for fle in infiles:
+        with open(fle, "r") as ifile:
+            genes = [gx.rstrip("\n") for gx in ifile.readlines()]
+        gene_sets.append(genes)
+
+    set1 = set(gene_sets[0])
+    for i in range(1, len(gene_sets)):
+        set2 = set(gene_sets[i])
+        set3 = set1.intersection(set2)
+        set1 = set3
+
+    with open(outfile, "w") as ofile:
+        for gene in set1:
+            ofile.write("{}\n".format(gene))
+
+
+@P.cluster_runnable
 def coreOverlapFoVsGC(infile, fo_gc):
     '''
     Take a list of differentially expressed genes

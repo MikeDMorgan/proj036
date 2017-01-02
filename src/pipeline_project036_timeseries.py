@@ -433,6 +433,33 @@ def defineUnionCoreGenes(infiles, outfile):
                                          submit=True)
 
 
+@follows(timeUnionCrossCorrelation,
+         defineUnionCoreGenes)
+@transform("tpm.dir/*.tpm",
+           regex("tpm.dir/(.+).tpm"),
+           add_inputs("time_DE_union.dir/Union-core_genes.tsv"),
+           r"time_DE_union.dir/\1-lncRNA-Union_core-correlation.tsv")
+def correlateUnionCoreGenesLncRNAs(infiles, outfile):
+    '''
+    Cross-correlation of core-defined protein-coding genes
+    with all lncRNAs
+    '''
+
+    job_memory = "8G"
+
+    infiles = ",".join(infiles)
+    statement = '''
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/lnc2correlate.py
+    --log=%(outfile)s.log
+    --method=cross-correlation
+    --task=correlate-lncs-genes
+    %(infiles)s
+    > %(outfile)s
+    '''
+
+    P.run()
+
+
 @follows(coreOverlapFovsGC)
 @collate(coreOverlapFovsGC,
          regex("(.+)_(.+)-intersect.tsv"),
@@ -886,6 +913,26 @@ def correlateLncRNAsWithClusterGenes(infiles, outfile):
     P.run()
 
 
+@follows(correlateUnionCoreGenesLncRNAs)
+@transform(correlateUnionCoreGenesLncRNAs,
+           regex("time_DE_union.dir/(.+)-lncRNA-Union_core-correlation.tsv"),
+           r"lncRNA_classification.dir/\1-CORE_Union_lncRNA-gene_correlations.tsv.gz")
+def flattenCoreUnionCorrelations(infile, outfile):
+    '''
+    Select highly correlated lncRNA:protein-coding gene pairs
+    and flatten, one row per correlation
+    '''
+
+    statement = '''
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/lnc2correlate.py
+    --log=%(outfile)s.log
+    --task=filter-correlations
+    %(infile)s | gzip > %(outfile)s
+    '''
+
+    P.run()
+
+
 @follows(defineConditionGenes,
          defineCoreGenes,
          correlateLncRNAsWithClusterGenes,
@@ -932,10 +979,12 @@ def flattenCoreCorrelations(infile, outfile):
 @jobs_limit(2)
 @follows(correlateLncRNAsWithClusterGenes,
          flattenCoreCorrelations,
-         flattenConditionCorrelations)
+         flattenConditionCorrelations,
+         flattenCoreUnionCorrelations)
 @transform([correlateLncRNAsWithClusterGenes,
             flattenCoreCorrelations,
-            flattenConditionCorrelations],
+            flattenConditionCorrelations,
+            flattenCoreUnionCorrelations],
            suffix("-gene_correlations.tsv.gz"),
            add_inputs("lncRNA_merged.gtf.gz"),
            "-annotated.tsv")
@@ -1054,7 +1103,8 @@ def plotCountsPerLnc(infile, outfile):
          plotCountsPerLnc)
 @transform([correlateLncRNAsWithClusterGenes,
             flattenCoreCorrelations,
-            flattenConditionCorrelations],
+            flattenConditionCorrelations,
+            flattenCoreUnionCorrelations],
            regex("lncRNA_classification.dir/(.+)-gene_correlations.tsv.gz"),
            add_inputs(r"lncRNA_merged.gtf.gz"),
            r"lncRNA_classification.dir/\1-positive_lncRNAs.tsv.gz")
@@ -1067,7 +1117,7 @@ def classifyPosLncRNAs(infiles, outfile):
     input_files = ",".join(infiles)
     job_options = "-l mem_free=6G"
 
-    statement = '''python /ifs/projects/proj036/pipeline_project036_timeseries/src/lnc2correlate.py
+    statement = '''python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/lnc2correlate.py
     --log=%(outfile)s.log
     --task=classify-lncrna
     --lncRNA-class=intergenic
@@ -1082,10 +1132,12 @@ def classifyPosLncRNAs(infiles, outfile):
 @follows(correlateLncRNAsWithClusterGenes,
          flattenConditionCorrelations,
          flattenCoreCorrelations,
+         flattenCoreUnionCorrelations,
          plotCountsPerLnc)
 @transform([correlateLncRNAsWithClusterGenes,
             flattenCoreCorrelations,
-            flattenConditionCorrelations],
+            flattenConditionCorrelations,
+            flattenCoreUnionCorrelations],
            regex("lncRNA_classification.dir/(.+)-gene_correlations.tsv.gz"),
            add_inputs(r"lncRNA_merged.gtf.gz"),
            r"lncRNA_classification.dir/\1-negative_lncRNAs.tsv.gz")
@@ -1099,7 +1151,7 @@ def classifyNegLncRNAs(infiles, outfile):
 
     job_options = "-l mem_free=6G"
 
-    statement = '''python /ifs/projects/proj036/pipeline_project036_timeseries/src/lnc2correlate.py
+    statement = '''python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/lnc2correlate.py
     --log=%(outfile)s.log
     --task=classify-lncrna
     --lncRNA-class=intergenic
@@ -1134,7 +1186,7 @@ def getGeneDistances(infiles, outfile):
     job_options = "-l mem_free=2G"
 
     statement = '''zcat %(lncs)s |
-    python %(scriptsdir)s/gtf2table.py
+    cgat %(scriptsdir)s/gtf2table.py
     --gff-file=%(genes)s
     --filename-format=gtf
     --log=neighbours.log
@@ -1160,7 +1212,7 @@ def getCorrelatePairs(infile, outfile):
     job_options = "-l mem_free=4G"
 
     statement = '''
-    python /ifs/projects/proj036/pipeline_project036_timeseries/src/lnc2correlate.py
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/lnc2correlate.py
     --task=filter-pairs
     --cor-threshold=%(lncrna_correlation_threshold)s
     --log=%(outfile)s.log
@@ -1184,7 +1236,7 @@ def getMaxCorrelatePairs(infile, outfile):
     job_options = "-l mem_free=4G"
 
     statement = '''
-    python /ifs/projects/proj036/pipeline_project036_timeseries/src/lnc2correlate.py
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/lnc2correlate.py
     --task=max-correlation
     --log=%(outfile)s.log
     %(infile)s
@@ -1223,7 +1275,7 @@ def getProximalPairs(infiles, outfile):
 @follows(getProximalPairs)
 @transform(getCorrelatePairs,
            regex("correlations.dir/(.+)-(.+)-correlation_pairs.tsv"),
-           add_inputs(r"expression.dir/\1-average_expression.tsv.gz"),
+           add_inputs(r"lncRNA_classification.dir/\1-\2-negative_lncRNAs.tsv.gz"),
            r"correlations.dir/\1-\2-anticorrelation_pairs.tsv")
 def getAntiCorrelations(infiles, outfile):
     '''
@@ -1485,7 +1537,7 @@ def targetScanParse(infile, outfile):
     job_options = "-l mem_free=6G"
 
     statement = ''' cat %(infile)s | 
-    python /ifs/projects/proj036/pipeline_project036_timeseries/src/miranda2GTF.py
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/miranda2GTF.py
     --format=targetscan
     --GTF=%(lnc_file)s
     --log=%(outfile)s.log | gzip > %(outfile)s'''
@@ -1515,7 +1567,7 @@ def annotateMreGTF(infile, outfile):
 
     job_memory = "16G"
     statement = '''
-    python /ifs/projects/proj036/pipeline_project036_timeseries/src/mre2mre.py
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/mre2mre.py
     --log=%(outfile)s.log
     --task=annotate
     --annotation-gtf-file=%(lnc_gtf)s
@@ -1547,7 +1599,7 @@ def filterMREs(infile, outfile):
     job_options = "-l mem_free=10G"
 
     statement = '''
-    python /ifs/projects/proj036/pipeline_project036_timeseries/src/mre2mre.py
+    python /ifs/projects/proj036/pipeline_project036_timeseries/proj036/src/mre2mre.py
     --log=%(outfile)s.log
     --task=filter
     --method=list
@@ -2542,7 +2594,7 @@ elif PARAMS['transcript_program'] == "sailfish":
         job_memory = "2G"
 
         statement = '''
-        python %(scriptsdir)s/combine_tables.py
+        python /ifs/devel/michaelm/cgat/CGAT/scripts/combine_tables.py
         --columns=1
         --take=4
         --use-file-prefix

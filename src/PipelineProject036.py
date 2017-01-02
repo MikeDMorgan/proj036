@@ -596,7 +596,24 @@ def annotateGeneList(infile,
     cor_df = pd.read_table(infile, sep="\t", header=0,
                            index_col=None, compression=comp)
 
-    gene_set = cor_df['gene_id'].tolist()
+    # need to figure out which column contains the gene ids
+    gene_re = re.compile("ENS")
+    lnc_re = re.compile("LNC")
+
+    # which ever column has majority ensembl IDs is the gene ID column
+    # there are only 2 columns to choose from gene_id and lncRNA_id
+    lnc_col_search = sum([1 for lx in cor_df['lncRNA_id'] if re.search(gene_re, lx)])
+    gene_col_search = sum([1 for gx in cor_df['gene_id'] if re.search(gene_re, gx)])
+    if gene_col_search > lnc_col_search:
+        gene_col = 'gene_id'
+        lnc_col = 'lncRNA_id'
+    elif gene_col_search < lnc_col_search:
+        gene_col = 'lncRNA_id'
+        lnc_col = 'gene_id'
+    else:
+        raise ValueError("Unable to determine gene ID column")
+
+    gene_set = cor_df[gene_col].tolist()
     genes = [g for g in set(gene_set)]
     mg = mygene.MyGeneInfo()
     # can throw AssertionError if too many queries at once
@@ -644,13 +661,14 @@ def annotateGeneList(infile,
     lnc_file.close()
 
     lnc_df = pd.DataFrame(lnc_dict).T
+
     try:
         annotated = pd.merge(left=merged, right=lnc_df,
                              left_on='lncRNA', right_index=True,
                              how='left')
     except KeyError:
         annotated = pd.merge(left=merged, right=lnc_df,
-                             left_on='lncRNA_id', right_index=True,
+                             left_on=lnc_col, right_index=True,
                              how='left')
 
     # drop cluster info if contained in dataframe
@@ -659,7 +677,7 @@ def annotateGeneList(infile,
                        inplace=True, axis=1)
     except ValueError:
         pass
-    columns = ['ensembl_id', 'lncRNA_id', 'correlation',
+    columns = ['lncRNA_id', 'ensembl_id', 'correlation',
                'gene_symbol', 'chromosome', 'lnc_end',
                'lnc_exonic', 'lnc_class', 'lnc_start',
                'lnc_strand']
@@ -730,9 +748,9 @@ def plotGeneCounts(infile, outfile):
     '''
     Plot counts of lncRNAs per gene
     '''
-
-    df = pd.read_table(infile, sep="\t", header=None, index_col=0)
-    df.columns = ["counts"]
+    pandas2ri.activate()
+    df = pd.read_table(infile, sep="\t", header=None, index_col=None)
+    df.columns = ["gene", "counts"]
     r_df = pandas2ri.py2ri_pandasdataframe(df)
     R.assign("g.df", r_df)
 
@@ -751,7 +769,7 @@ def plotLncCounts(infile, outfile):
     '''
     Plot ggplot histogram of number of lncRNAs correlated per gene
     '''
-
+    pandas2ri.activate()
     df = pd.read_table(infile, sep="\t", header=0, index_col=None)
 
     r_df = pandas2ri.py2ri_pandasdataframe(df)
@@ -1870,33 +1888,23 @@ def antiCorrelatePairs(pairs_file, expression, outfile, threshold):
                             compression=expr_comp,
                             sep="\t",
                             header=0,
-                            index_col=0)
+                            index_col=None)
 
+    expr_df.columns = ['lncRNA_id', 'gene_id', 'value']
     # select lncRNAs that are highly correlated
     # select genes that are anti-correlated with these lncRNAs
     lncs = set([l for l in pair_df['lncRNA_id'] if re.search("LNC", l)])
-    genes = set([g for g in expr_df.index if re.search("ENS", g)])
 
-    # get correlations between all lncs and genes,
-    cor_frame = pd.DataFrame(index=lncs, columns=genes)
-    cor_frame = cor_frame.fillna(0.0)
-
-    pairs = itertools.product(lncs, genes)
-    for each in pairs:
-        lnc_val = expr_df.loc[each[0]].tolist()
-        gene_val = expr_df.loc[each[1]].tolist()
-        cor = TS.crossCorrelate(lnc_val, gene_val, lag=0)[0]
-        cor_frame.loc[each[0], each[1]] = cor
-    cor_frame = cor_frame.fillna(0.0)
-    cor_frame.index.name = "lncRNA_id"
-    unstack = cor_frame.unstack()
-    cor_list = unstack.reset_index()
-    cor_list.columns = ['gene_id', 'lncRNA_id', 'correlation']
-    anticor_list = cor_list[cor_list['correlation'] <= threshold]
-    anticor_list.index = anticor_list['gene_id']
-    anticor_list.drop(['gene_id'], inplace=True, axis=1)
-
-    anticor_list.to_csv(outfile, sep="\t", index_label="gene_id")
+    anticor_dict = {}
+    for lnc in lncs:
+        gene_cors = expr_df.loc[expr_df['lncRNA_id'] == lnc]
+        min_cor = np.min(gene_cors['value'])
+        gene_pair = gene_cors.loc[gene_cors['value'] == min_cor]
+        anticor_dict[lnc] = {'gene_id': gene_pair['gene_id'].values[0],
+                             'value': gene_pair['value'].values[0]}
+    
+    anticor_df = pd.DataFrame(anticor_dict).T
+    anticor_df.to_csv(outfile, sep="\t", index_label="lncRNA_id")
     
 
 @P.cluster_runnable
@@ -2078,6 +2086,43 @@ def correlateEigengenes(ref_eigens,
 
     return corr_frame
 
+def correlateGenesLncs(gene_list, express, correlation,
+                       lncs_list=None):
+    '''
+    Cross correlate all lncRNAs and a set of
+    specific protein-coding genes. A subset of lncRNAs
+    can be selected by providing a list lncRNA IDs
+    '''
+
+    exprs_df = pd.read_table(express,
+                             sep="\t",
+                             index_col=None,
+                             header=0)
+
+    exprs_df.set_index('gene', inplace=True, drop=True)
+    gene_df = exprs_df.loc[gene_list]
+
+    if not lncs_list:
+        lncs_list = [lx for lx in exprs_df.index if re.search("LNC", lx)]
+    else:
+        pass
+
+    lnc_df = exprs_df.loc[lncs_list]
+
+    cor_frame = pd.DataFrame(index=lncs_list, columns=gene_list)
+    cor_frame = cor_frame.fillna(0.0)
+    lag = 0
+    if correlation == "cross-correlation":
+        for x in itertools.product(lncs_list, gene_list):
+            lnc_vals = lnc_df.loc[x[0]].tolist()
+            gene_vals = gene_df.loc[x[1]].tolist()
+            corr = crossCorrelate(lnc_vals, gene_vals, lag)
+            cor_frame[x[1]][x[0]] = corr
+    else:
+        pass
+
+    return cor_frame
+
 
 def correlateLncRNAs(lnc_frame, gene_frame, correlation, lag=0):
     '''
@@ -2107,7 +2152,7 @@ def correlateLncRNAs(lnc_frame, gene_frame, correlation, lag=0):
     return cor_frame
 
 
-def filterCorrelations(infile):
+def filterCorrelations(infile, threshold=None):
     '''
     output list of gene1:gene2:value
     '''
@@ -2126,6 +2171,12 @@ def filterCorrelations(infile):
     cor_list.index = cor_list['gene_id']
     cor_list.drop(['gene_id'], inplace=True, axis=1)
 
+    if threshold:
+        keep_cor = cor_list['value'] >= threshold
+        cor_list = cor_list.loc[keep_cor]
+    else:
+        pass
+        
     return cor_list
 
 
@@ -2970,10 +3021,23 @@ def classifyLncRNA(lnc_list, lnc_gtf, lnc_class, direction, threshold):
     else:
         raise AttributeError("Unrecognised correlation direction"
                              "Please supply positive or negative")
+    gene_re = re.compile("ENS")
+    gene_search = sum([1 for lx in dir_cor['gene_id'] if re.search(gene_re, lx)])
+    lnc_search = sum([1 for gx in dir_cor['lncRNA_id'] if re.search(gene_re, gx)])
+
+    if gene_search > lnc_search:
+        gene_col = 'gene_id'
+        lnc_col = 'lncRNA_id'
+    elif gene_search < lnc_search:
+        gene_col = 'lncRNA_id'
+        lnc_col = 'gene_id'
+    else:
+        raise ValueError('unable to determine gene ID column')
+
     try:
-        cor_df.index = cor_df['set2']
+        dir_cor.index = dir_cor['set2']
     except KeyError:
-        cor_df.index = cor_df['gene_id']
+        dir_cor.index = dir_cor[gene_col]
 
     lnc_iter = GTF.transcript_iterator(GTF.iterator(IOTools.openFile(lnc_gtf)))
     try:
@@ -2982,11 +3046,11 @@ def classifyLncRNA(lnc_list, lnc_gtf, lnc_class, direction, threshold):
         try:
             lnc_cors = set(dir_cor['lncRNA'].tolist())
         except KeyError:
-            lnc_cors = set(dir_cor['lncRNA_id'].tolist())
+            lnc_cors = set(dir_cor[lnc_col].tolist())
     try:
-        gene_ids = set(cor_df['set2'].tolist())
+        gene_ids = set(dir_cor['set2'].tolist())
     except KeyError:
-        gene_ids = set(cor_df['gene_id'].tolist())
+        gene_ids = set(dir_cor[gene_col].tolist())
 
     lnc_frame = pd.DataFrame(index=gene_ids, columns=['value'])
 
@@ -3001,12 +3065,12 @@ def classifyLncRNA(lnc_list, lnc_gtf, lnc_class, direction, threshold):
         if lnc_source == lnc_class and lnc_status == 'm':
             if lnc_id in lnc_cors:
                 try:
-                    temp_frame = cor_df[cor_df['set1'] == lnc_id]
+                    temp_frame = dir_cor[dir_cor['set1'] == lnc_id]
                 except KeyError:
                     try:
-                        temp_frame = cor_df[cor_df['lncRNA'] == lnc_id]
+                        temp_frame = dir_cor[dir_cor['lncRNA'] == lnc_id]
                     except KeyError:
-                        temp_frame = cor_df[cor_df['lncRNA_id'] == lnc_id]
+                        temp_frame = dir_cor[dir_cor[lnc_col] == lnc_id]
                 lnc_frame = lnc_frame.append(temp_frame)
             else:
                 pass
@@ -3034,12 +3098,12 @@ def classifyLncRNA(lnc_list, lnc_gtf, lnc_class, direction, threshold):
 
     # catch bug in number of columns due to column name differences
     if len(not_na.columns) > 3:
-        not_na.drop(['gene_id'], inplace=True, axis=1)
+        not_na.drop([gene_col], inplace=True, axis=1)
     else:
         pass
-    not_na.columns = ['gene_id', 'lncRNA_id', 'value']
-    not_na.index = not_na['gene_id']
-    not_na = not_na.drop(['gene_id'], axis=1)
+    not_na.columns = [gene_col, lnc_col, 'value']
+    not_na.index = not_na[gene_col]
+    not_na = not_na.drop([gene_col], axis=1)
 
     return not_na
 
@@ -3327,16 +3391,31 @@ def correlationPairs(infile, threshold):
         comp = None
 
     cors_df = pd.read_table(infile, sep="\t", header=0,
-                            compression=comp, index_col=0)
+                            compression=comp, index_col=None)
+    
+    cors_df.columns = ['lncRNA_id', 'gene_id', 'value']
+    gene_re = re.compile("ENS")
+    gene_search = sum([1 for lx in cors_df['gene_id'] if re.search(gene_re, lx)])
+    lnc_search = sum([1 for gx in cors_df['lncRNA_id'] if re.search(gene_re, gx)])
+
+    if gene_search > lnc_search:
+        gene_col = 'gene_id'
+        lnc_col = 'lncRNA_id'
+    elif gene_search < lnc_search:
+        gene_col = 'lncRNA_id'
+        lnc_col = 'gene_id'
+    else:
+        raise ValueError('unable to determine gene ID column')
+
     try:
-        lnc_set = set(cors_df['lncRNA_id'])
+        lnc_set = set(cors_df[lnc_col])
     except KeyError:
         lnc_set = set(cors_df['lncRNA'])
     lncs_nn = {}
     idx = 0
     for lnc in lnc_set:
         try:
-            l_df = cors_df[cors_df['lncRNA_id'] == lnc]
+            l_df = cors_df[cors_df[lnc_col] == lnc]
         except KeyError:
             l_df = cors_df[cors_df['lncRNA'] == lnc]
         if threshold >= 0:
@@ -3345,7 +3424,7 @@ def correlationPairs(infile, threshold):
             mgene = l_df[l_df['value'] <= threshold]
         for xlnc in mgene.index:
             lncs_nn[str(idx)] = {'lncRNA_id': lnc,
-                                 'gene_id': xlnc,
+                                 'gene_id': mgene.loc[xlnc][gene_col],
                                  'value': mgene.loc[xlnc]['value']}
             idx += 1
 
@@ -3368,20 +3447,35 @@ def maxCorrelationPairs(infile):
         comp = None
 
     cors_df = pd.read_table(infile, sep="\t", header=0,
-                            compression=comp, index_col=0)
+                            compression=comp, index_col=None)
+
+    cors_df.columns = ['lncRNA_id', 'gene_id', 'value']
+    gene_re = re.compile("ENS")
+    gene_search = sum([1 for lx in cors_df['gene_id'] if re.search(gene_re, lx)])
+    lnc_search = sum([1 for gx in cors_df['lncRNA_id'] if re.search(gene_re, gx)])
+
+    if gene_search > lnc_search:
+        gene_col = 'gene_id'
+        lnc_col = 'lncRNA_id'
+    elif gene_search < lnc_search:
+        gene_col = 'lncRNA_id'
+        lnc_col = 'gene_id'
+    else:
+        raise ValueError('unable to determine gene ID column')
+    
     try:
-        lnc_set = set(cors_df['lncRNA_id'])
+        lnc_set = set(cors_df[lnc_col])
     except KeyError:
         lnc_set = set(cors_df['lncRNA'])
     lncs_nn = {}
     idx = 0
     for lnc in lnc_set:
         try:
-            l_df = cors_df[cors_df['lncRNA_id'] == lnc]
+            l_df = cors_df[cors_df[lnc_col] == lnc]
         except KeyError:
             l_df = cors_df[cors_df['lncRNA'] == lnc]
         max_cor = max(l_df['value'])
-        mgene = l_df[l_df['value'] == max_cor].index[0]
+        mgene = l_df.loc[l_df['value'] == max_cor, gene_col].values[0]
         lncs_nn[str(idx)] = {'lncRNA_id': lnc,
                              'gene_id': mgene,
                              'value': max_cor}

@@ -109,6 +109,21 @@ parses command line options in sys.argv, unless *argv* is given.
                                      correlation="cross-correlation",
                                      lag=0)
 
+    elif options.task == "correlate-lncs-genes":
+        files = infile.split(",")
+        genes = files[1]
+        exprs = files[0]
+
+        gene_list = set()
+
+        with open(genes, "r") as gfile:
+            for gene in gfile.readlines():
+                gene_list.add(gene.rstrip("\n"))
+
+        df = P36.correlateGenesLncs(gene_list=gene_list,
+                                    express=exprs,
+                                    correlation=options.method)
+
     elif options.task == "filter-correlation":
         threshold = float(options.cor_threshold)
         df = P36.filter_correlation(infile=infile,

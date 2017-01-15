@@ -1298,10 +1298,9 @@ def getAntiCorrelations(infiles, outfile):
 ####################################################################
 
 
-@follows(getProximalPairs,
-         getCorrelatePairs)
-@transform(getProximalPairs,
-           regex("correlations.dir/(.+)-(.+)-proximal_pairs.tsv"),
+@follows(getProximalPairs)
+@transform(getCorrelatePairs,
+           regex("correlations.dir/(.+)-(.+)-correlation_pairs.tsv"),
            add_inputs([r"expression.dir/\1-average_expression.tsv.gz",
                        "lncRNA_merged.gtf.gz"]),
            r"correlations.dir/\1-\2-random_pairs.tsv")
@@ -1389,8 +1388,8 @@ def pairs2GTF(infiles, outfile):
 
     infile = infiles[0]
     merge_gtf = infiles[1]
-    in_frame = pd.read_table(infile, sep="\t", index_col=0, header=0)
-    genes_list = set(in_frame.index)
+    in_frame = pd.read_table(infile, sep="\t", index_col=None, header=0)
+    genes_list = set(in_frame['gene_id'].values)
     lncs_list = set(in_frame['lncRNA_id'].values)
     # I HATE IMPLICIT IN-PLACE OPERATIONS!!!!
     lncs_list.update(genes_list)

@@ -575,6 +575,8 @@ def mergeStatTable(file_list, outfile):
     file_list.pop(0)
     for fle in file_list:
         df_ = pd.read_table(fle, sep="\t", header=0, index_col=0)
+        # remove duplicated rows
+        df.drop_duplicates(inplace=True)
         df = df.append(df_)
     df.to_csv(outfile, sep="\t", index_label="comparison")
 
@@ -786,7 +788,7 @@ def plotLncCounts(infile, outfile):
 
 
 @P.cluster_runnable
-def plotCorrelations(cor_file, rand_file, prox_file, outfile):
+def plotCorrelations(cor_file, rand_file, prox_file, anti_file, outfile):
     '''
     Plot distributions of correlation coefficients across gene sets
     '''
@@ -1762,7 +1764,7 @@ def correlateRandomPairs(pairs_file, expression, ref_gtf, outfile, seed):
                              sep="\t",
                              header=0,
                              index_col=0)
-    lnc_ids = pairs_df['lncRNA_id']
+    lnc_ids = set(pairs_df['lncRNA_id'])
     gene_ids = pairs_df.index
 
     all_lncs = [l for l in expr_df.index if re.search("LNC", l)]
@@ -1797,7 +1799,12 @@ def correlateRandomPairs(pairs_file, expression, ref_gtf, outfile, seed):
     # and length within 1kb
     random.seed(seed)
     lnc_idxs = set()
-    while len(lnc_idxs) != len(lnc_ids):
+    l_count = 0
+
+    # there may not be sufficient random matched lncRNAs
+    # to have a 1:1 match with the proximal/correlated lncRNAs
+    max_hits = 0
+    while max_hits < 100:
         # randomly select a lncRNA from all expressed lncRNAs
         r_lnc = random.randint(0, len(all_lncs) - 1)
         r_lnc_name = expr_df.iloc[r_lnc].name
@@ -1812,8 +1819,8 @@ def correlateRandomPairs(pairs_file, expression, ref_gtf, outfile, seed):
             lnc_len = length_dict[r_lnc_name]
             # select multi-exonic intergenic lncRNAs only
             if rclass == "intergenic" and rexon == "m":
-                hi_xpr = np.mean(pairs_lexpr.iloc[r_match]) + 0.5
-                lo_xpr = np.mean(pairs_lexpr.iloc[r_match]) - 0.5
+                hi_xpr = np.mean(pairs_lexpr.iloc[r_match]) + 1.0
+                lo_xpr = np.mean(pairs_lexpr.iloc[r_match]) - 1.0
                 hi_len = lnc_len + 1000
                 lo_len = lnc_len - 1000
                 if hi_xpr < np.mean(expr_df.iloc[r_lnc]):
@@ -1829,14 +1836,23 @@ def correlateRandomPairs(pairs_file, expression, ref_gtf, outfile, seed):
                         # only add random lnc if matched on expression
                         # lncRNA transcript length
                         # and lncRNA classification, but not ID
+                        E.info("Adding lncRNA {} to pool".format(r_lnc))
+                        set_len = len(lnc_idxs)
                         lnc_idxs.add(r_lnc)
+                        if set_len == len(lnc_idxs):
+                            E.info("lncRNA already in set")
+                            max_hits += 1
+                        else:
+                            E.info("{}/{} lncRNAs selected".format(len(lnc_idxs),
+                                                                   len(lnc_ids)))
             else:
                 pass
         else:
             pass
 
+    E.info("matched {} lncRNAs".format(len(lnc_idxs)))
     gene_idxs = set()
-    while len(gene_idxs) != len(gene_ids):
+    while len(gene_idxs) != len(lnc_idxs):
         gene_idxs.add(random.randint(0, len(all_genes) - 1))
 
     # correlate random genes and lncRNAs
